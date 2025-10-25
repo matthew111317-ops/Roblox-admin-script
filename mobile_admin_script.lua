@@ -1,4 +1,4 @@
--- Complete Mobile Admin Script with ESP, Aimbot, Fog Controls
+-- Complete Mobile Admin Script with Team Check, Wall Check, and Improved FOV
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
@@ -76,18 +76,51 @@ closeButton.Parent = controlPanel
 
 controlPanel.Parent = screenGui
 
+-- Team Check Function
+local function isEnemy(player)
+    if player == localPlayer then return false end
+    
+    -- Check if players are on different teams
+    local localTeam = localPlayer.Team
+    local playerTeam = player.Team
+    
+    if localTeam and playerTeam then
+        return localTeam ~= playerTeam
+    end
+    
+    -- If no teams, consider everyone enemy
+    return true
+end
+
+-- Wall Check Function
+local function isVisible(targetHead)
+    local localCamera = workspace.CurrentCamera
+    if not localCamera then return false end
+    
+    local cameraPos = localCamera.CFrame.Position
+    local targetPos = targetHead.Position
+    
+    -- Raycast to check for walls
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    raycastParams.FilterDescendantsInstances = {localPlayer.Character, targetHead.Parent}
+    
+    local raycastResult = workspace:Raycast(cameraPos, (targetPos - cameraPos), raycastParams)
+    
+    -- If raycast hits nothing, target is visible
+    return raycastResult == nil
+end
+
 -- ESP Functionality
-local espConnections = {} -- Store connections to clean up later
-local espHighlights = {} -- Store highlight objects
+local espConnections = {}
+local espHighlights = {}
 
 local function createESP(player)
     if player == localPlayer then return end
     
     local function setupCharacterESP(character)
-        -- Wait for character to fully load
         wait(1)
         
-        -- Remove existing ESP if any
         if espHighlights[player] then
             espHighlights[player]:Destroy()
             espHighlights[player] = nil
@@ -98,38 +131,41 @@ local function createESP(player)
         highlight.Name = "ESP_" .. player.Name
         highlight.Adornee = character
         highlight.Parent = character
-        highlight.FillColor = Color3.fromRGB(255, 0, 0)
-        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        
+        -- Color based on team
+        if isEnemy(player) then
+            highlight.FillColor = Color3.fromRGB(255, 0, 0)    -- Red for enemies
+            highlight.OutlineColor = Color3.fromRGB(255, 100, 100)
+        else
+            highlight.FillColor = Color3.fromRGB(0, 255, 0)    -- Green for teammates
+            highlight.OutlineColor = Color3.fromRGB(100, 255, 100)
+        end
+        
         highlight.FillTransparency = 0.5
         highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
         
         espHighlights[player] = highlight
     end
     
-    -- Setup ESP for current character if exists
     if player.Character then
         setupCharacterESP(player.Character)
     end
     
-    -- Connect to character added event (respawns and new characters)
     local characterConnection = player.CharacterAdded:Connect(function(character)
         if espEnabled then
             setupCharacterESP(character)
         end
     end)
     
-    -- Store connection for cleanup
     espConnections[player] = characterConnection
 end
 
 local function removeESP(player)
-    -- Remove highlight
     if espHighlights[player] then
         espHighlights[player]:Destroy()
         espHighlights[player] = nil
     end
     
-    -- Disconnect character connection
     if espConnections[player] then
         espConnections[player]:Disconnect()
         espConnections[player] = nil
@@ -140,39 +176,32 @@ local function toggleESP(enabled)
     espEnabled = enabled
     
     if enabled then
-        -- Clear existing data
         for player, _ in pairs(espHighlights) do
             removeESP(player)
         end
         
-        -- Create ESP for existing players
         for _, player in pairs(Players:GetPlayers()) do
             createESP(player)
         end
         
-        -- Connect to new players joining
         local playerAddedConnection = Players.PlayerAdded:Connect(function(player)
             createESP(player)
         end)
         
-        -- Connect to players leaving
         local playerRemovingConnection = Players.PlayerRemoving:Connect(function(player)
             removeESP(player)
         end)
         
-        -- Store these connections
         espConnections["PlayerAdded"] = playerAddedConnection
         espConnections["PlayerRemoving"] = playerRemovingConnection
         
-        print("ESP Enabled - Tracking all players")
+        print("ESP Enabled - Team colors: Red=Enemy, Green=Teammate")
         
     else
-        -- Remove all ESP
         for _, player in pairs(Players:GetPlayers()) do
             removeESP(player)
         end
         
-        -- Disconnect global connections
         if espConnections["PlayerAdded"] then
             espConnections["PlayerAdded"]:Disconnect()
             espConnections["PlayerAdded"] = nil
@@ -183,7 +212,7 @@ local function toggleESP(enabled)
             espConnections["PlayerRemoving"] = nil
         end
         
-        print("ESP Disabled - All tracking stopped")
+        print("ESP Disabled")
     end
 end
 
@@ -191,7 +220,7 @@ end
 local aimbotConnection
 local currentTarget = nil
 local fovCircle = nil
-local fovSize = 100 -- FOV circle size
+local fovSize = 150 -- Increased FOV size for better targeting
 
 -- Create visible FOV circle
 local function createFOVCircle()
@@ -210,7 +239,7 @@ local function createFOVCircle()
     
     -- Create circle using UICorner
     local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(1, 0) -- Makes it a perfect circle
+    corner.CornerRadius = UDim.new(1, 0)
     corner.Parent = frame
     
     -- White outline
@@ -234,21 +263,17 @@ local function isInFOVCircle(targetHead)
     local localCamera = workspace.CurrentCamera
     if not localCamera then return false end
     
-    -- Convert world position to screen position
     local targetPos = targetHead.Position
     local screenPoint, visible = localCamera:WorldToScreenPoint(targetPos)
     
     if not visible then return false end
     
-    -- Get screen center
     local viewportSize = localCamera.ViewportSize
     local screenCenter = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
     
-    -- Calculate distance from center
     local screenPos = Vector2.new(screenPoint.X, screenPoint.Y)
     local distanceFromCenter = (screenPos - screenCenter).Magnitude
     
-    -- Only target if within FOV circle radius
     local circleRadius = fovSize / 2
     return distanceFromCenter <= circleRadius
 end
@@ -262,19 +287,22 @@ local function findClosestPlayerInFOV()
     if not localHead then return nil end
     
     for _, player in pairs(Players:GetPlayers()) do
-        if player ~= localPlayer and player.Character then
+        -- Team check: only target enemies
+        if player ~= localPlayer and isEnemy(player) and player.Character then
             local character = player.Character
             local humanoid = character:FindFirstChildOfClass("Humanoid")
             local head = character:FindFirstChild("Head")
             
-            -- Check if player is valid target
             if humanoid and humanoid.Health > 0 and head then
-                -- Check if player is within FOV circle
-                if isInFOVCircle(head) then
-                    local distance = (localHead.Position - head.Position).Magnitude
-                    if distance < closestDistance then
-                        closestDistance = distance
-                        closestPlayer = player
+                -- Wall check: only target visible players
+                if isVisible(head) then
+                    -- FOV check: only target players in FOV circle
+                    if isInFOVCircle(head) then
+                        local distance = (localHead.Position - head.Position).Magnitude
+                        if distance < closestDistance then
+                            closestDistance = distance
+                            closestPlayer = player
+                        end
                     end
                 end
             end
@@ -291,30 +319,31 @@ local function isValidTarget(player)
     local humanoid = character:FindFirstChildOfClass("Humanoid")
     local head = character:FindFirstChild("Head")
     
-    return humanoid and humanoid.Health > 0 and head and isInFOVCircle(head)
+    if not (humanoid and humanoid.Health > 0 and head) then
+        return false
+    end
+    
+    -- Check all conditions: enemy, visible, in FOV
+    return isEnemy(player) and isVisible(head) and isInFOVCircle(head)
 end
 
 local function updateAimbotTarget()
     if not aimbotEnabled then return end
     
-    -- Check if current target is still valid
     if currentTarget and not isValidTarget(currentTarget) then
         currentTarget = nil
     end
     
-    -- Find new target if needed
     if not currentTarget or not isValidTarget(currentTarget) then
         currentTarget = findClosestPlayerInFOV()
     end
     
-    -- Aim at current target
     if currentTarget and isValidTarget(currentTarget) then
         local targetHead = currentTarget.Character:FindFirstChild("Head")
         local localCharacter = localPlayer.Character
         local localCamera = workspace.CurrentCamera
         
         if targetHead and localCharacter and localCamera then
-            -- Smooth aimbot - point camera at target
             localCamera.CFrame = CFrame.lookAt(localCamera.CFrame.Position, targetHead.Position)
         end
     end
@@ -324,33 +353,25 @@ local function toggleAimbot(enabled)
     aimbotEnabled = enabled
     
     if enabled then
-        -- Create FOV circle
         createFOVCircle()
-        
-        -- Reset target
         currentTarget = nil
-        
-        -- Start aimbot loop
         aimbotConnection = RunService.RenderStepped:Connect(function()
             updateAimbotTarget()
         end)
         
-        print("Aimbot Enabled - White FOV circle visible (size: " .. fovSize .. ")")
+        print("Aimbot Enabled - Targeting enemies only (Wall Check: ON)")
         
     else
-        -- Stop aimbot and remove FOV circle
         if aimbotConnection then
             aimbotConnection:Disconnect()
             aimbotConnection = nil
         end
-        
         removeFOVCircle()
         currentTarget = nil
-        print("Aimbot Disabled - FOV circle removed")
+        print("Aimbot Disabled")
     end
 end
 
--- Auto-update aimbot when players leave
 Players.PlayerRemoving:Connect(function(player)
     if aimbotEnabled and currentTarget == player then
         currentTarget = nil
@@ -413,7 +434,6 @@ yPosition = yPosition + 70
 buttons.fog = createControlButton("Set Fog (100)", UDim2.new(0, 20, 0, yPosition), function()
     setFog(100)
     buttons.fog.BackgroundColor3 = Color3.fromRGB(155, 89, 182)
-    -- Reset color after 1 second
     wait(1)
     buttons.fog.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
 end)
@@ -421,7 +441,7 @@ yPosition = yPosition + 70
 
 -- Clear Fog Button
 buttons.clearFog = createControlButton("Clear Fog", UDim2.new(0, 20, 0, yPosition), function()
-    Lighting.FogEnd = 1000000 -- Effectively disables fog
+    Lighting.FogEnd = 1000000
     buttons.clearFog.BackgroundColor3 = Color3.fromRGB(230, 126, 34)
     wait(1)
     buttons.clearFog.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
@@ -483,6 +503,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
-print("Complete Mobile Admin Script Loaded!")
-print("Tap the crown button 👑 to open admin panel")
-print("Features: ESP, Aimbot with FOV circle, Fog controls, Draggable panel")
+print("Enhanced Admin Script Loaded!")
+print("Features: Team Check, Wall Check, Larger FOV (150)")
+print("ESP: Red=Enemies, Green=Teammates")
+print("Aimbot: Only targets visible enemies in FOV")
